@@ -1,86 +1,136 @@
+import {
+  query,
+  update,
+  Record,
+  text,
+  Opt,
+  nat64,
+  StableBTreeMap,
+  Variant,
+  Canister,
+  Result,
+  Err,
+  ic,
+  Ok,
+  Vec,
+} from "azle";
 import { v4 as uuidv4 } from "uuid";
-import { ic, Server, StableBTreeMap } from "azle";
-import express from "express";
+const message = Record({
+  id: text,
+  title: text,
+  body: text,
+  attachmentURL: text,
+  createdAt: nat64,
+});
 
-export default Server(() => {
-    class Message {
-        id: string;
-        title: string;
-        body: string;
-        attachmentURL: string;
-        createdAt: Date;
-        updatedAt: Date | null;
-      }
-      
-      const messagesStorage = StableBTreeMap<string, Message>(0);
-      
-      const app = express();
-      app.use(express.json());
-      
-      app.post("/messages", (req, res) => {
-        const message: Message = {
-          id: uuidv4(),
-          createdAt: getCurrentDate(),
-          ...req.body,
-        };
-        messagesStorage.insert(message.id, message);
-        res.json(message);
-      });
-      
-      app.get("/messages", (req, res) => {
-        res.json(messagesStorage.values());
-      });
-      
-      app.get("/messages/:id", (req, res) => {
-        const messageId = req.params.id;
-        const messageOpt = messagesStorage.get(messageId);
-        if (!messageOpt) {
-          res.status(404).send(`the message with id=${messageId} not found`);
-        } else {
-          res.json(messageOpt);
-        }
-      });
-      
-      app.put("/messages/:id", (req, res) => {
-        const messageId = req.params.id;
-        const messageOpt = messagesStorage.get(messageId);
-        if (!messageOpt || !messageOpt.Some) {
-          res
-            .status(400)
-            .send(
-              `couldn't update a message with id=${messageId}. message not found`
-            );
-        } else {
-          const message = messageOpt.Some;
-      
-          const updatedMessage = {
-            ...message,
-            ...req.body,
-            updatedAt: getCurrentDate(),
-          };
-          messagesStorage.insert(message.id, updatedMessage);
-          res.json(updatedMessage);
-        }
-      });
-      
-      app.delete("/messages/:id", (req, res) => {
-        const messageId = req.params.id;
-        const deletedMessage = messagesStorage.remove(messageId);
-        if (!deletedMessage) {
-          res
-            .status(400)
-            .send(
-              `couldn't delete a message with id=${messageId}. message not found`
-            );
-        } else {
-          res.json(deletedMessage);
-        }
-      });
-      
-      function getCurrentDate() {
-        const timestamp = new Number(ic.time());
-        return new Date(timestamp.valueOf() / 1000_000);
+type message = typeof message.tsType;
+
+//define errors
+
+const messageErrors = Variant({
+  failed: text,
+  missingCredentials: text,
+  messagenotfound: text,
+});
+
+//define type of message errors
+type messageErrors = typeof messageErrors.tsType;
+
+//define payloads to e passed
+
+const messagePayload = Record({
+  title: text,
+  body: text,
+  attachmentURL: text,
+});
+
+//delete message payload
+const deleteMessagePayload = Record({
+  messageid: text,
+});
+//get message payload
+
+const getMessagePayload = Record({
+  messageid: text,
+});
+const messagesStorage = StableBTreeMap<string, message>(0);
+export default Canister({
+  //add message
+
+  addmessage: update(
+    [messagePayload],
+    Result(text, messageErrors),
+    (payload) => {
+      //check if all the details are available
+
+      if (!payload.attachmentURL || !payload.body || !payload.title) {
+        return Err({ missingCredentials: "some credentials are missing" });
       }
 
-      return app.listen();
-})
+      //create a new message
+      const new_message: message = {
+        id: uuidv4(),
+        title: payload.title,
+        body: payload.body,
+        attachmentURL: payload.attachmentURL,
+        createdAt: ic.time(),
+      };
+
+      //update message storage with new message
+
+      messagesStorage.insert(new_message.id, new_message);
+      return Ok("message sent");
+    }
+  ),
+
+  //function to get all messages
+
+  get_all_messages: query([], Vec(message), () => {
+    return messagesStorage.values();
+  }),
+
+  //function to delete message
+
+  delete_message: update(
+    [deleteMessagePayload],
+    Result(text, messageErrors),
+    (payload) => {
+      //check if the message id is available
+      if (!payload.messageid) {
+        return Err({ missingCredentials: "some credentials are missing" });
+      }
+
+      //get message
+
+      let message = messagesStorage.get(payload.messageid).Some;
+
+      if (!message) {
+        return Err({ messagenotfound: "messagenotfound" });
+      }
+      messagesStorage.remove(payload.messageid);
+      return Ok("message deleted");
+    }
+  ),
+
+  //get message based on id
+  get_message: query(
+    [getMessagePayload],
+    Result(message, messageErrors),
+    (payload) => {
+      //check if the message id is available
+      if (!payload.messageid) {
+        return Err({ missingCredentials: "some credentials are missing" });
+      }
+
+      //get message
+
+      let message = messagesStorage.get(payload.messageid).Some;
+
+      if (!message) {
+        return Err({ messagenotfound: "messagenotfound" });
+      }
+
+      return Ok(message);
+    }
+  ),
+});
